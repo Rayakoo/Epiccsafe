@@ -31,17 +31,62 @@ def sign_up(email: str, password: str, data: dict = None):
         None: If registration fails
     """
     try:
+        user_data = data or {}
+        if "role" not in user_data:
+            user_data["role"] = "admin"
+        
         response = supabase.auth.sign_up({
             "email": email,
             "password": password,
             "options": {
-                "data": data or {}
+                "data": user_data
             }
         })
         return response
     except Exception as e:
         print(f"Error during signup: {e}")
+        return {"error": str(e)}
+
+
+def create_admin(admin_data: dict):
+    """
+    Create a new admin record in the admins table
+    
+    Args:
+        admin_data (dict): Admin data with id, email, name, etc.
+        
+    Returns:
+        dict: Response from Supabase
+        None: If creation fails
+    """
+    try:
+        response = supabase_admin.table("admins").insert({
+            "id": admin_data.get("id"),
+            "email": admin_data.get("email"),
+            "name": admin_data.get("name", ""),
+        }).execute()
+        return response
+    except Exception as e:
+        print(f"Error creating admin: {e}")
         return None
+
+
+def is_admin(user_id: str):
+    """
+    Check if a user is an admin
+    
+    Args:
+        user_id (str): User ID to check
+        
+    Returns:
+        bool: True if user is admin, False otherwise
+    """
+    try:
+        response = supabase_admin.table("admins").select("id").eq("id", user_id).execute()
+        return len(response.data) > 0
+    except Exception as e:
+        print(f"Error checking admin status: {e}")
+        return False
 
 
 def sign_in(email: str, password: str):
@@ -67,19 +112,45 @@ def sign_in(email: str, password: str):
         return None
 
 
-def sign_out():
+def sign_out(token: str = None):
     """
     Sign out the current user
     
+    Args:
+        token (str, optional): User's JWT token. If provided, will sign out that specific session.
+        
     Returns:
         bool: True if sign out successful, False otherwise
     """
     try:
+        if token:
+            # Set the session with the provided token and then sign out
+            supabase.auth.set_session(token, "", "")
         supabase.auth.sign_out()
         return True
     except Exception as e:
         print(f"Error during signout: {e}")
-        return None
+        return False
+
+
+def sign_out_user(user_id: str):
+    """
+    Sign out a user by revoking all sessions (admin operation)
+    
+    Args:
+        user_id (str): User ID to sign out
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Use admin API to sign out user (revoke all sessions)
+        supabase_admin.auth.admin.sign_out(user_id)
+        return True
+    except Exception as e:
+        # If admin sign_out not available, try alternative
+        print(f"Error during admin signout: {e}")
+        return False
 
 
 def get_user():
