@@ -8,6 +8,18 @@ import supabase_client as auth
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 security = HTTPBearer()
 
+
+def _parse_dt(val) -> Optional[datetime]:
+    """Parse datetime from Supabase (handles both string and datetime objects)"""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    try:
+        return datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
 class SignUpRequest(BaseModel):
     email: EmailStr = Field(..., description="User's email address")
     password: str = Field(..., min_length=6, description="User's password (minimum 6 characters)")
@@ -22,6 +34,7 @@ class UserResponse(BaseModel):
     email: EmailStr = Field(..., description="User's email address")
     created_at: datetime = Field(..., description="Timestamp when user was created")
     updated_at: Optional[datetime] = Field(default=None, description="Timestamp when user was last updated")
+    is_admin: bool = Field(default=False, description="Whether the user is registered as admin")
 
 class TokenResponse(BaseModel):
     access_token: str = Field(..., description="JWT access token for authentication")
@@ -59,22 +72,22 @@ async def signup(request: SignUpRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"[AUTH][SIGNUP] Gagal terhubung ke server auth: {str(e)}",
         )
-    if not result or not getattr(result, "user", None):
-        err_msg = result.get("error") if isinstance(result, dict) else "Unknown error"
+
+    user_data = result.user
+    if not user_data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"[AUTH][SIGNUP] Gagal membuat akun: {err_msg}",
+            detail="[AUTH][SIGNUP] Akun berhasil dibuat tapi perlu konfirmasi email terlebih dahulu, atau user data tidak tersedia",
         )
-    user_data = result.user
+
     # Insert admin record using service role
     try:
         admin_data = {
             "id": user_data.id,
             "email": user_data.email,
             "name": request.data.get("name") if request.data else None,
-            "password_hash": "",  # password handled by Supabase auth
+            "password_hash": "",
         }
-        # Remove None values
         admin_data = {k: v for k, v in admin_data.items() if v is not None}
         auth.supabase_admin.table("admins").insert(admin_data).execute()
     except Exception as e:
@@ -82,22 +95,22 @@ async def signup(request: SignUpRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"[AUTH][SIGNUP] Akun berhasil dibuat tapi gagal menyimpan data admin ke database: {str(e)}",
         )
-    # Convert Supabase timestamp strings to datetime objects
-    created_at = datetime.fromisoformat(user_data.created_at.replace("Z", "+00:00"))
-    updated_at = None
-    if user_data.updated_at:
-        updated_at = datetime.fromisoformat(user_data.updated_at.replace("Z", "+00:00"))
+
+    created_at = _parse_dt(user_data.created_at)
+    updated_at = _parse_dt(user_data.updated_at)
+
     user_response = UserResponse(
         id=user_data.id,
         email=user_data.email,
-        created_at=created_at,
-        updated_at=updated_at
+        created_at=created_at or datetime.now(),
+        updated_at=updated_at,
+        is_admin=True,
     )
     access_token = result.session.access_token if result.session else ""
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
-        user=user_response
+        user=user_response,
     )
 
 @router.post("/signin", response_model=TokenResponse)
@@ -112,36 +125,46 @@ async def signin(request: SignInRequest):
         if "invalid" in err_msg or "wrong" in err_msg or "credentials" in err_msg or "password" in err_msg or "email" in err_msg:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Email atau password salah",
+                detail="[AUTH][SIGNIN] Email atau password salah",
                 headers={"WWW-Authenticate": "Bearer"},
             )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Signin error: {str(e)}",
+            detail=f"[AUTH][SIGNIN] Gagal terhubung ke server auth: {str(e)}",
         )
-    if not result or not getattr(result, "user", None):
+
+    user_data = result.user
+    if not user_data:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Email atau password salah",
+            detail="[AUTH][SIGNIN] Email atau password salah",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user_data = result.user
-    # Convert timestamps
-    created_at = datetime.fromisoformat(user_data.created_at.replace("Z", "+00:00"))
-    updated_at = None
-    if user_data.updated_at:
-        updated_at = datetime.fromisoformat(user_data.updated_at.replace("Z", "+00:00"))
+
+    # Check if user is registered as admin
+    is_admin = auth.is_admin(user_data.id)
+    if not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="[AUTH][SIGNIN] Akun tidak terdaftar sebagai admin, hubungi administrator",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    created_at = _parse_dt(user_data.created_at)
+    updated_at = _parse_dt(user_data.updated_at)
+
     user_response = UserResponse(
         id=user_data.id,
         email=user_data.email,
-        created_at=created_at,
-        updated_at=updated_at
+        created_at=created_at or datetime.now(),
+        updated_at=updated_at,
+        is_admin=True,
     )
     access_token = result.session.access_token if result.session else ""
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
-        user=user_response
+        user=user_response,
     )
 
 @router.post("/signout")
@@ -168,9 +191,11 @@ async def get_current_user_info(current_user: dict = Depends(get_current_user)):
     """
     Get current authenticated user information
     """
+    is_admin = auth.is_admin(current_user.id)
     return UserResponse(
         id=current_user.id,
         email=current_user.email,
         created_at=current_user.created_at,
-        updated_at=current_user.updated_at
+        updated_at=current_user.updated_at,
+        is_admin=is_admin,
     )

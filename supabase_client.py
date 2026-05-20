@@ -20,32 +20,27 @@ supabase_admin: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 def sign_up(email: str, password: str, data: dict = None):
     """
     Register a new user with email and password
-    
+
     Args:
         email (str): User's email address
         password (str): User's password
         data (dict, optional): Additional user data to store in user.metadata
-        
+
     Returns:
-        dict: Response from Supabase containing user and session data
-        None: If registration fails
+        AuthResponse: Response from Supabase containing user and session data
     """
-    try:
-        user_data = data or {}
-        if "role" not in user_data:
-            user_data["role"] = "admin"
-        
-        response = supabase.auth.sign_up({
-            "email": email,
-            "password": password,
-            "options": {
-                "data": user_data
-            }
-        })
-        return response
-    except Exception as e:
-        print(f"Error during signup: {e}")
-        return {"error": str(e)}
+    user_data = data or {}
+    if "role" not in user_data:
+        user_data["role"] = "admin"
+
+    response = supabase.auth.sign_up({
+        "email": email,
+        "password": password,
+        "options": {
+            "data": user_data
+        }
+    })
+    return response
 
 
 def create_admin(admin_data: dict):
