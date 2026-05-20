@@ -375,7 +375,7 @@ async def scan_url(url: str = Query(..., description="URL to scan")):
             is_whitelisted=is_whitelisted(url)
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error scanning URL: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"[SCAN][URL] Gagal memeriksa blacklist/whitelist untuk URL '{url}': {str(e)}")
 
 
 @router.get("/url/extension", response_model=ScanUrlExtensionResponse)
@@ -390,7 +390,7 @@ async def scan_url_extension(url: str = Query(..., description="URL to scan")):
             risk_score=calculate_risk_score(url)
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error scanning URL: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"[SCAN][EXTENSION] Gagal memindai URL '{url}' untuk extension: {str(e)}")
 
 
 @router.get("/url/status", response_model=CheckStatusResponse)
@@ -412,7 +412,7 @@ async def check_url_status(url: str = Query(..., description="URL to check")):
             )
         return CheckStatusResponse(status=status)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error checking URL status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"[SCAN][STATUS] Gagal menentukan status URL '{url}': {str(e)}")
 
 
 @router.get("/api", response_model=ScanApiResponse)
@@ -424,7 +424,7 @@ async def call_scan_api_endpoint():
         risk_score, status = call_scan_api()
         return ScanApiResponse(risk_score=risk_score, status=status)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error calling scan API: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"[SCAN][API] Gagal memanggil scan API eksternal: {str(e)}")
 
 
 # ------------------------------------------------------------------
@@ -440,7 +440,7 @@ def scan_url_unified(payload: ScanRequest):
     """
     url = payload.url.strip()
     if not url:
-        raise HTTPException(status_code=400, detail="URL cannot be empty")
+        raise HTTPException(status_code=400, detail="[SCAN] URL tidak boleh kosong")
 
     # 1️⃣ Whitelist check
     if is_whitelisted(url):
@@ -473,12 +473,12 @@ def scan_url_unified(payload: ScanRequest):
     if len(features) != len(FITUR_URL_ONLY):
         raise HTTPException(
             status_code=500,
-            detail=f"Feature extraction length mismatch: expected {len(FITUR_URL_ONLY)}, got {len(features)}"
+            detail=f"[SCAN][FEATURE] Ekstraksi fitur untuk URL '{url}' menghasilkan {len(features)} fitur (diharapkan {len(FITUR_URL_ONLY)})"
         )
 
     # 4️⃣ Model prediction
     if model is None:
-        raise HTTPException(status_code=500, detail="Model not loaded")
+        raise HTTPException(status_code=500, detail=f"[SCAN][MODEL] Model ML tidak ditemukan atau gagal dimuat di path '{MODEL_PATH}'")
 
     try:
         # model.predict_proba → [prob_safe, prob_phishing]

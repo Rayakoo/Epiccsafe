@@ -99,17 +99,15 @@ def sign_in(email: str, password: str):
         
     Returns:
         dict: Response from Supabase containing user and session data
-        None: If authentication fails
+        
+    Raises:
+        Exception: Re-raises Supabase auth errors after logging them
     """
-    try:
-        response = supabase.auth.sign_in_with_password({
-            "email": email,
-            "password": password
-        })
-        return response
-    except Exception as e:
-        print(f"Error during signin: {e}")
-        return None
+    response = supabase.auth.sign_in_with_password({
+        "email": email,
+        "password": password
+    })
+    return response
 
 
 def sign_out(token: str = None):

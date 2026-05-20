@@ -80,7 +80,10 @@ async def submit_report(request: SubmitReportRequest):
         result = db.supabase_admin.table("reports").insert(report_data).execute()
         
         if not result.data:
-            raise HTTPException(status_code=500, detail="Failed to submit report")
+            raise HTTPException(
+                status_code=500,
+                detail=f"[REPORTS][SUBMIT] Database tidak mengembalikan data setelah insert untuk ticket '{ticket_id}'"
+            )
         
         # Hit scan endpoint with the URL and save results
         risk_score = 0
@@ -103,7 +106,7 @@ async def submit_report(request: SubmitReportRequest):
                 "updated_at": datetime.now().isoformat()
             }).eq("id", ticket_id).execute()
         except Exception as scan_err:
-            print(f"Scan error for {request.url}: {scan_err}")
+            print(f"[REPORTS][SUBMIT] Scan error untuk URL '{request.url}': {scan_err}")
         
         return SubmitReportResponse(
             ticket_id=ticket_id,
@@ -111,8 +114,13 @@ async def submit_report(request: SubmitReportRequest):
             risk_score=risk_score
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error submitting report: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"[REPORTS][SUBMIT] Gagal submit laporan untuk URL '{request.url}': {str(e)}"
+        )
 
 @router.get("/status/{ticket_id}", response_model=CheckStatusResponse)
 async def check_report_status(ticket_id: str):
@@ -127,7 +135,10 @@ async def check_report_status(ticket_id: str):
         result = db.supabase_admin.table("reports").select("*").eq("id", ticket_id).execute()
         
         if not result.data:
-            raise HTTPException(status_code=404, detail="Report not found")
+            raise HTTPException(
+                status_code=404,
+                detail=f"[REPORTS][STATUS] Laporan dengan ticket '{ticket_id}' tidak ditemukan di database"
+            )
         
         report = result.data[0]
         
@@ -152,4 +163,7 @@ async def check_report_status(ticket_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error checking status: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"[REPORTS][STATUS] Gagal memeriksa status untuk ticket '{ticket_id}': {str(e)}"
+        )

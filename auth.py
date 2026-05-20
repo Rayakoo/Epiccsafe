@@ -55,12 +55,16 @@ async def signup(request: SignUpRequest):
     try:
         result = auth.sign_up(request.email, request.password, request.data)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Signup error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"[AUTH][SIGNUP] Gagal terhubung ke server auth: {str(e)}",
+        )
     if not result or not getattr(result, "user", None):
         err_msg = result.get("error") if isinstance(result, dict) else "Unknown error"
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"Unable to create user account: {err_msg}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"[AUTH][SIGNUP] Gagal membuat akun: {err_msg}",
+        )
     user_data = result.user
     # Insert admin record using service role
     try:
@@ -74,9 +78,10 @@ async def signup(request: SignUpRequest):
         admin_data = {k: v for k, v in admin_data.items() if v is not None}
         auth.supabase_admin.table("admins").insert(admin_data).execute()
     except Exception as e:
-        # Log error but don't fail signup? For simplicity we raise.
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Failed to create admin record: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"[AUTH][SIGNUP] Akun berhasil dibuat tapi gagal menyimpan data admin ke database: {str(e)}",
+        )
     # Convert Supabase timestamp strings to datetime objects
     created_at = datetime.fromisoformat(user_data.created_at.replace("Z", "+00:00"))
     updated_at = None
@@ -103,13 +108,23 @@ async def signin(request: SignInRequest):
     try:
         result = auth.sign_in(request.email, request.password)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Signin error: {str(e)}")
+        err_msg = str(e).lower()
+        if "invalid" in err_msg or "wrong" in err_msg or "credentials" in err_msg or "password" in err_msg or "email" in err_msg:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Email atau password salah",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Signin error: {str(e)}",
+        )
     if not result or not getattr(result, "user", None):
-        err_msg = result.get("error") if isinstance(result, dict) else "Invalid email or password"
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail=err_msg,
-                            headers={"WWW-Authenticate": "Bearer"})
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Email atau password salah",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     user_data = result.user
     # Convert timestamps
     created_at = datetime.fromisoformat(user_data.created_at.replace("Z", "+00:00"))
@@ -137,11 +152,15 @@ async def signout(current_user: dict = Depends(get_current_user)):
     try:
         success = auth.sign_out()
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Signout error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"[AUTH][SIGNOUT] Gagal terhubung ke server auth: {str(e)}",
+        )
     if not success:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Unable to sign out")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="[AUTH][SIGNOUT] Server auth mengembalikan respon gagal saat signout",
+        )
     return {"message": "Successfully signed out"}
 
 @router.get("/me", response_model=UserResponse)

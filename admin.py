@@ -50,7 +50,8 @@ async def get_all_reports(status: Optional[str] = Query(None, description="Filte
         return result.data or []
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching reports: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"[ADMIN][REPORTS] Gagal mengambil daftar laporan (filter status='{status}'): {str(e)}")
+
 
 @router.get("/reports/filter", response_model=List[ReportResponse])
 async def get_reports(
@@ -88,7 +89,11 @@ async def get_reports(
         return result.data or []
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching reports: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"[ADMIN][FILTER] Gagal mengambil laporan dengan filter (status='{status}', email='{email}', source='{source}'): {str(e)}"
+        )
+
 
 @router.put("/reports/status")
 async def update_report_status(request: UpdateStatusRequest):
@@ -106,7 +111,10 @@ async def update_report_status(request: UpdateStatusRequest):
         current = db.supabase_admin.table("reports").select("status").eq("id", request.report_id).execute()
         
         if not current.data:
-            raise HTTPException(status_code=404, detail="Report not found")
+            raise HTTPException(
+                status_code=404,
+                detail=f"[ADMIN][UPDATE] Laporan dengan ID '{request.report_id}' tidak ditemukan"
+            )
         
         old_status = current.data[0].get("status")
         
@@ -136,7 +144,11 @@ async def update_report_status(request: UpdateStatusRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error updating report: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"[ADMIN][UPDATE] Gagal update status laporan '{request.report_id}': {str(e)}"
+        )
+
 
 @router.post("/blacklist")
 async def add_blacklist(request: AddUrlRequest):
@@ -149,7 +161,10 @@ async def add_blacklist(request: AddUrlRequest):
     try:
         # Check if already blacklisted
         if is_blacklisted(request.url):
-            raise HTTPException(status_code=400, detail="URL already in blacklist")
+            raise HTTPException(
+                status_code=400,
+                detail=f"[ADMIN][BLACKLIST] URL '{request.url}' sudah ada di blacklist"
+            )
         
         blacklist_data = {
             "url": request.url,
@@ -164,7 +179,11 @@ async def add_blacklist(request: AddUrlRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding to blacklist: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"[ADMIN][BLACKLIST] Gagal menambahkan URL '{request.url}' ke blacklist: {str(e)}"
+        )
+
 
 @router.post("/whitelist")
 async def add_whitelist(request: AddUrlRequest):
@@ -177,7 +196,10 @@ async def add_whitelist(request: AddUrlRequest):
     try:
         # Check if already whitelisted
         if is_whitelisted(request.url):
-            raise HTTPException(status_code=400, detail="URL already in whitelist")
+            raise HTTPException(
+                status_code=400,
+                detail=f"[ADMIN][WHITELIST] URL '{request.url}' sudah ada di whitelist"
+            )
         
         whitelist_data = {
             "url": request.url,
@@ -192,7 +214,11 @@ async def add_whitelist(request: AddUrlRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding to whitelist: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"[ADMIN][WHITELIST] Gagal menambahkan URL '{request.url}' ke whitelist: {str(e)}"
+        )
+
 
 @router.get("/reports/{report_id}/logs")
 async def get_report_logs(report_id: str):
@@ -207,4 +233,7 @@ async def get_report_logs(report_id: str):
         return result.data or []
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching logs: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"[ADMIN][LOGS] Gagal mengambil log untuk laporan '{report_id}': {str(e)}"
+        )
