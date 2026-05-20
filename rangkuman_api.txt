@@ -1,0 +1,165 @@
+================================================================================
+                    EPICCSAFE API - RANGKUMAN ENDPOINT
+================================================================================
+Base URL: http://localhost:8000
+Dokumentasi: http://localhost:8000/docs (Swagger) / /redoc (ReDoc)
+
+================================================================================
+AUTH (/auth)
+================================================================================
+
+1. POST /auth/signup — Registrasi
+   Request:
+     { "email": "user@example.com", "password": "min6karakter",
+       "data": {"name": "John"} }
+   Response 200:
+     { "access_token": "jwt...", "token_type": "bearer",
+       "user": { "id": "uuid", "email": "...", "created_at": "...",
+                 "updated_at": null } }
+
+2. POST /auth/signin — Login
+   Request:
+     { "email": "user@example.com", "password": "..." }
+   Response 200: Sama seperti signup
+
+3. POST /auth/signout — Logout
+   Header: Authorization: Bearer <token>
+   Response 200: { "message": "Successfully signed out" }
+
+4. GET /auth/me — Info user saat ini
+   Header: Authorization: Bearer <token>
+   Response 200: { "id": "uuid", "email": "...", "created_at": "...",
+                   "updated_at": null }
+
+================================================================================
+REPORTS (/reports)
+================================================================================
+
+5. POST /reports/submit — Submit laporan URL mencurigakan
+   Request:
+     { "email": "user@example.com", "url": "http://suspicious-site.com",
+       "description": "opsional", "source": "web" }
+   Response 201:
+     { "ticket_id": "TICKET-A1B2C3D4", "status": "SUBMITTED",
+       "risk_score": 75 }
+
+6. GET /reports/status/{ticket_id} — Cek status laporan
+   Response 200:
+     { "status": "IN_REVIEW", "final_status": null,
+       "created_at": "2026-04-30T10:30:00", "resolved_at": null }
+   Status: SUBMITTED | IN_REVIEW | RESOLVED
+   Final Status: BLACKLISTED | WHITELISTED | SAFE | null
+
+================================================================================
+ADMIN (/admin)
+================================================================================
+
+7. GET /admin/reports?status=SUBMITTED — Semua laporan (filter opsional)
+   Response 200:
+     [{ "id": "TICKET-...", "email": "...", "url": "...",
+        "description": "...", "risk_score": 75, "status": "IN_REVIEW",
+        "final_status": null, "source": "web", "created_at": "...",
+        "updated_at": "...", "resolved_at": null }]
+
+8. GET /admin/reports/filter — Laporan dgn filter multi
+   Query: status, email, source, date_from, date_to
+   Response 200: Array objek report (sama seperti #7)
+
+9. PUT /admin/reports/status — Update status laporan
+   Request:
+     { "report_id": "TICKET-A1B2C3D4", "new_status": "RESOLVED",
+       "final_status": "BLACKLISTED", "admin_id": "admin-uuid",
+       "note": "opsional" }
+   Response 200: { "message": "Report status updated successfully" }
+
+10. POST /admin/blacklist — Tambah URL ke blacklist
+    Request: { "url": "http://...", "admin_id": "..." }
+    Response 200: { "message": "URL added to blacklist successfully" }
+
+11. POST /admin/whitelist — Tambah URL ke whitelist
+    Request: { "url": "http://...", "admin_id": "..." }
+    Response 200: { "message": "URL added to whitelist successfully" }
+
+12. GET /admin/reports/{report_id}/logs — Log aktivitas report
+    Response 200:
+      [{ "id": "log-uuid", "report_id": "TICKET-...",
+         "old_status": "SUBMITTED", "new_status": "IN_REVIEW",
+         "changed_by": "admin-uuid", "note": "...", "created_at": "..." }]
+
+================================================================================
+SCAN (/scan)
+================================================================================
+
+13. GET /scan/url?url=http://example.com — Cek blacklist/whitelist
+    Response 200: { "is_blacklisted": false, "is_whitelisted": true }
+
+14. GET /scan/url/extension?url=http://example.com — Scan extension
+    Response 200: { "is_blacklisted": false, "is_whitelisted": false,
+                    "risk_score": 45 }
+
+15. GET /scan/url/status?url=http://example.com — Status klasifikasi URL
+    Response 200: { "status": "SUSPICIOUS" }
+    Nilai: BLACKLISTED | WHITELISTED | SAFE (<30) | SUSPICIOUS (30-70)
+           | DANGEROUS (>70)
+
+16. GET /scan/api — Scan API dummy eksternal
+    Response 200: { "risk_score": 65, "status": "suspicious" }
+
+17. POST /scan — Scan URL komprehensif dengan ML model
+    Request: { "url": "http://example.com" }
+    Response 200:
+      { "url": "http://...", "score": 85, "reason": "model_prediction",
+        "prediction": 1, "predict_proba": [0.15, 0.85],
+        "conclusion": "PHISHING (Bahaya)",
+        "features": [0.12, 0.5, ...],  // 24 fitur ternormalisasi
+        "feature_map": { "URLLength": 0.12, ... } }
+    - score: 0 (safe) - 100 (phishing)
+    - reason: whitelisted | blacklisted | model_prediction
+    - prediction: 0 (safe) / 1 (phishing)
+    - conclusion: "SAFE (Bukan Phishing)" / "PHISHING (Bahaya)"
+
+================================================================================
+HEALTH
+================================================================================
+
+18. GET /health — Health check
+    Response 200:
+      { "status": "healthy", "service": "EpiccSafe API", "version": "1.0.0" }
+
+================================================================================
+ERROR RESPONSES (semua endpoint)
+================================================================================
+Format: { "detail": "Error message here" }
+Kode: 200 (success) | 201 (created) | 400 (bad request)
+      | 401 (unauthorized) | 404 (not found) | 500 (server error)
+
+================================================================================
+CONTOH CURL
+================================================================================
+
+# Signup
+curl -X POST http://localhost:8000/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@test.com","password":"123456","data":{"name":"Test"}}'
+
+# Signin
+curl -X POST http://localhost:8000/auth/signin \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@test.com","password":"123456"}'
+
+# Submit report
+curl -X POST http://localhost:8000/reports/submit \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@test.com","url":"http://suspicious.com","source":"web"}'
+
+# Scan komprehensif (POST)
+curl -X POST http://localhost:8000/scan \
+  -H "Content-Type: application/json" \
+  -d '{"url":"http://example.com"}'
+
+# Scan quick (GET)
+curl "http://localhost:8000/scan/url?url=http://example.com"
+
+# Admin (dgn token JWT)
+curl http://localhost:8000/admin/reports \
+  -H "Authorization: Bearer <jwt_token>"

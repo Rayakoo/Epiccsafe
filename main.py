@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from scan import router as scan_router
 from auth import router as auth_router
 from admin import router as admin_router
@@ -14,6 +15,18 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
+)
+
+# CORS - allow frontend origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://epiccsafe.vercel.app",
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Include routers

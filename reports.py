@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 import supabase_client as db
 from reports_helper import generate_ticket_id, is_blacklisted, is_whitelisted, log_report_activity
-from risk_score import calculate_risk_score
+from scan import scan_url_unified, ScanRequest
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
@@ -13,6 +13,10 @@ class SubmitReportRequest(BaseModel):
     url: str = Field(..., description="URL to report")
     description: Optional[str] = Field(None, description="Report description")
     source: str = Field(..., description="Source of report (e.g., 'web', 'extension')")
+    age: Optional[int] = Field(None, description="Age of the reporter")
+    province: Optional[str] = Field(None, description="Province of the reporter")
+    reporter_name: Optional[str] = Field(None, description="Name of the reporter")
+    phone_number: Optional[str] = Field(None, description="Phone number of the reporter")
 
 class SubmitReportResponse(BaseModel):
     ticket_id: str
@@ -20,9 +24,20 @@ class SubmitReportResponse(BaseModel):
     risk_score: int
 
 class CheckStatusResponse(BaseModel):
+    id: str
+    email: str
+    url: str
+    description: Optional[str]
+    risk_score: Optional[int]
     status: str
     final_status: Optional[str]
+    source: Optional[str]
+    age: Optional[int]
+    province: Optional[str]
+    reporter_name: Optional[str]
+    phone_number: Optional[str]
     created_at: datetime
+    updated_at: Optional[datetime]
     resolved_at: Optional[datetime]
 
 @router.post("/submit", response_model=SubmitReportResponse, status_code=201)
@@ -34,6 +49,10 @@ async def submit_report(request: SubmitReportRequest):
     - **url**: URL to be reported
     - **description**: Optional description of the issue
     - **source**: Source of the report (web, extension, etc.)
+    - **age**: Optional age of the reporter
+    - **province**: Optional province of the reporter
+    - **reporter_name**: Optional name of the reporter
+    - **phone_number**: Optional phone number of the reporter
     
     Returns ticket_id for tracking the report
     """
@@ -41,27 +60,18 @@ async def submit_report(request: SubmitReportRequest):
         # Generate ticket ID
         ticket_id = generate_ticket_id()
         
-        # Calculate risk score
-        risk_score = calculate_risk_score(request.url)
-        
-        # Check if URL is blacklisted/whitelisted
-        if is_blacklisted(request.url):
-            final_status = "BLACKLISTED"
-        elif is_whitelisted(request.url):
-            final_status = "WHITELISTED"
-        else:
-            final_status = None
-        
-        # Prepare report data
+        # Prepare initial report data
         report_data = {
             "id": ticket_id,
             "email": request.email,
             "url": request.url,
             "description": request.description,
-            "risk_score": risk_score,
-            "status": "SUBMITTED",
-            "final_status": final_status,
             "source": request.source,
+            "age": request.age,
+            "province": request.province,
+            "reporter_name": request.reporter_name,
+            "phone_number": request.phone_number,
+            "status": "OPEN",
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat()
         }
@@ -72,9 +82,32 @@ async def submit_report(request: SubmitReportRequest):
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to submit report")
         
+        # Hit scan endpoint with the URL and save results
+        risk_score = 0
+        try:
+            scan_result = scan_url_unified(ScanRequest(url=request.url))
+            risk_score = scan_result.score
+
+            if scan_result.reason == "blacklisted":
+                final_status = "BLACKLISTED"
+            elif scan_result.reason == "whitelisted":
+                final_status = "WHITELISTED"
+            elif scan_result.prediction == 0:
+                final_status = "SAFE"
+            else:
+                final_status = None
+
+            db.supabase_admin.table("reports").update({
+                "risk_score": risk_score,
+                "final_status": final_status,
+                "updated_at": datetime.now().isoformat()
+            }).eq("id", ticket_id).execute()
+        except Exception as scan_err:
+            print(f"Scan error for {request.url}: {scan_err}")
+        
         return SubmitReportResponse(
             ticket_id=ticket_id,
-            status="SUBMITTED",
+            status="OPEN",
             risk_score=risk_score
         )
         
@@ -99,9 +132,20 @@ async def check_report_status(ticket_id: str):
         report = result.data[0]
         
         return CheckStatusResponse(
+            id=report.get("id"),
+            email=report.get("email"),
+            url=report.get("url"),
+            description=report.get("description"),
+            risk_score=report.get("risk_score"),
             status=report.get("status"),
             final_status=report.get("final_status"),
+            source=report.get("source"),
+            age=report.get("age"),
+            province=report.get("province"),
+            reporter_name=report.get("reporter_name"),
+            phone_number=report.get("phone_number"),
             created_at=datetime.fromisoformat(report.get("created_at")),
+            updated_at=datetime.fromisoformat(report.get("updated_at")) if report.get("updated_at") else None,
             resolved_at=datetime.fromisoformat(report.get("resolved_at")) if report.get("resolved_at") else None
         )
         
