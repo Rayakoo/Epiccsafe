@@ -34,6 +34,7 @@ def log_report_activity(report_id: str, old_status: Optional[str], new_status: s
     """Log report status changes"""
     try:
         log_data = {
+            "id": str(uuid.uuid4()),
             "report_id": report_id,
             "old_status": old_status,
             "new_status": new_status,

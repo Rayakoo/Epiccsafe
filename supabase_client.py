@@ -59,6 +59,7 @@ def create_admin(admin_data: dict):
             "id": admin_data.get("id"),
             "email": admin_data.get("email"),
             "name": admin_data.get("name", ""),
+            "password_hash": admin_data.get("password_hash", ""),
         }).execute()
         return response
     except Exception as e:

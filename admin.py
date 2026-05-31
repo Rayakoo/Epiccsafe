@@ -1,9 +1,11 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, Field
 from typing import Optional, List
+import uuid
 from datetime import datetime, date
 import supabase_client as db
 from reports_helper import log_report_activity, is_blacklisted, is_whitelisted
+from email_service import send_status_update
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -24,12 +26,16 @@ class ReportResponse(BaseModel):
     email: str
     url: str
     description: Optional[str]
-    risk_score: int
+    risk_score: Optional[int]
     status: str
     final_status: Optional[str]
     source: Optional[str]
+    age: Optional[int]
+    province: Optional[str]
+    reporter_name: Optional[str]
+    phone_number: Optional[str]
     created_at: datetime
-    updated_at: datetime
+    updated_at: Optional[datetime]
     resolved_at: Optional[datetime]
 
 @router.get("/reports", response_model=List[ReportResponse])
@@ -108,7 +114,7 @@ async def update_report_status(request: UpdateStatusRequest):
     """
     try:
         # Get current report
-        current = db.supabase_admin.table("reports").select("status").eq("id", request.report_id).execute()
+        current = db.supabase_admin.table("reports").select("status, email, url").eq("id", request.report_id).execute()
         
         if not current.data:
             raise HTTPException(
@@ -130,6 +136,21 @@ async def update_report_status(request: UpdateStatusRequest):
         
         result = db.supabase_admin.table("reports").update(update_data).eq("id", request.report_id).execute()
         
+        # Kirim email notifikasi ke reporter
+        try:
+            reporter_email = current.data[0].get("email")
+            report_url = current.data[0].get("url")
+            if reporter_email:
+                send_status_update(
+                    to_email=reporter_email,
+                    ticket_id=request.report_id,
+                    url=report_url,
+                    new_status=request.new_status,
+                    final_status=request.final_status,
+                )
+        except Exception as e:
+            print(f"[ADMIN][EMAIL] Gagal kirim email notifikasi: {e}")
+
         # Log the activity
         log_report_activity(
             report_id=request.report_id,
@@ -167,6 +188,7 @@ async def add_blacklist(request: AddUrlRequest):
             )
         
         blacklist_data = {
+            "id": str(uuid.uuid4()),
             "url": request.url,
             "added_by": request.admin_id,
             "created_at": datetime.now().isoformat()
@@ -202,6 +224,7 @@ async def add_whitelist(request: AddUrlRequest):
             )
         
         whitelist_data = {
+            "id": str(uuid.uuid4()),
             "url": request.url,
             "added_by": request.admin_id,
             "created_at": datetime.now().isoformat()

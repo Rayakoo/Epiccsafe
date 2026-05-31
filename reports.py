@@ -5,6 +5,7 @@ from datetime import datetime
 import supabase_client as db
 from reports_helper import generate_ticket_id, is_blacklisted, is_whitelisted, log_report_activity
 from scan import scan_url_unified, ScanRequest
+from email_service import send_report_confirmation
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
@@ -108,6 +109,17 @@ async def submit_report(request: SubmitReportRequest):
         except Exception as scan_err:
             print(f"[REPORTS][SUBMIT] Scan error untuk URL '{request.url}': {scan_err}")
         
+        # Kirim email konfirmasi (jangan blokir jika gagal)
+        try:
+            send_report_confirmation(
+                to_email=request.email,
+                ticket_id=ticket_id,
+                url=request.url,
+                status="OPEN",
+            )
+        except Exception as e:
+            print(f"[REPORTS][EMAIL] Gagal kirim email konfirmasi: {e}")
+
         return SubmitReportResponse(
             ticket_id=ticket_id,
             status="OPEN",

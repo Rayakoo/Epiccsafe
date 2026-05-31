@@ -17,13 +17,16 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# CORS - allow Chrome extension (any origin)
+# CORS - allow frontend domains
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["POST", "GET", "OPTIONS"],
-    allow_headers=["Content-Type", "Accept"],
+    allow_origins=[
+        "https://epiccsafe.vercel.app",
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["POST", "GET", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Accept", "Authorization"],
 )
 
 # Include routers

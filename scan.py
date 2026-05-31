@@ -4,14 +4,15 @@
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
+import json
 import joblib
 import numpy as np
 import os
 import re
 import math
-import tldextract          # pip install tldextract
-import requests            # pip install requests
-from bs4 import BeautifulSoup   # pip install beautifulsoup4 lxml
+import tldextract
+import requests
+from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs
 from reports_helper import is_blacklisted, is_whitelisted
 from risk_score import calculate_risk_score, call_scan_api
@@ -57,43 +58,35 @@ class ScanResponse(BaseModel):
 
 
 # ------------------------------------------------------------------
+# Base directory for model assets
+# ------------------------------------------------------------------
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ------------------------------------------------------------------
 # Load the ML model once at startup
 # ------------------------------------------------------------------
-MODEL_PATH = os.getenv("MODEL_PATH", "/home/rafi/Projects/epiccsafe/model_epiccsafe.pkl")
+MODEL_PATH = os.environ.get("MODEL_PATH") or os.path.join(_BASE_DIR, "model_epiccsafe.pkl")
 if not os.path.exists(MODEL_PATH):
     model = None
 else:
     model = joblib.load(MODEL_PATH)
 
 # ------------------------------------------------------------------
-# Feature order – **must** match the order the model was trained on
+# Load the MinMaxScaler and feature list saved during training
 # ------------------------------------------------------------------
-FITUR_URL_ONLY = [
-    'URLLength',
-    'DomainLength',
-    'IsDomainIP',
-    'URLSimilarityIndex',
-    'CharContinuationRate',
-    'TLDLegitimateProb',
-    'URLCharProb',
-    'TLDLength',
-    'NoOfSubDomain',
-    'HasObfuscation',
-    'NoOfObfuscatedChar',
-    'ObfuscationRatio',
-    'LetterRatioInURL',          # <-- note: NOT NoOfLettersInURL
-    'NoOfDegitsInURL',
-    'DegitRatioInURL',
-    'NoOfEqualsInURL',
-    'NoOfQMarkInURL',
-    'NoOfAmpersandInURL',
-    'NoOfOtherSpecialCharsInURL',
-    'SpacialCharRatioInURL',
-    'IsHTTPS',
-    'HasSocialNet',
-    'HasCopyrightInfo',
-    'HasDescription'
-]
+SCALER_PATH = os.path.join(_BASE_DIR, "scaler_epiccsafe.pkl")
+FITUR_PATH  = os.path.join(_BASE_DIR, "fitur_model.json")
+
+if os.path.exists(SCALER_PATH):
+    scaler_epiccsafe = joblib.load(SCALER_PATH)
+else:
+    scaler_epiccsafe = None
+
+if os.path.exists(FITUR_PATH):
+    with open(FITUR_PATH, "r") as f:
+        FITUR_URL_ONLY = json.load(f)
+else:
+    FITUR_URL_ONLY = []
 
 
 # ------------------------------------------------------------------
@@ -104,63 +97,115 @@ def _safe_div(a: float, b: float) -> float:
 
 
 # ------------------------------------------------------------------
-# Min‑max values supplied by you (feature → {min, max})
+# Helper: Levenshtein similarity ratio (0‑1)
 # ------------------------------------------------------------------
-_FEATURE_RANGES = {
-    'URLLength':                {'min': 13.0,  'max': 1769.0},
-    'DomainLength':             {'min': 4.0,   'max': 110.0},
-    'IsDomainIP':               {'min': 0.0,   'max': 1.0},
-    'URLSimilarityIndex':       {'min': 0.50908065, 'max': 100.0},
-    'CharContinuationRate':     {'min': 0.0,   'max': 1.0},
-    'TLDLegitimateProb':        {'min': 0.0,   'max': 0.5229071},
-    'URLCharProb':              {'min': 0.001082764, 'max': 0.090823664},
-    'TLDLength':                {'min': 2.0,   'max': 13.0},
-    'NoOfSubDomain':            {'min': 0.0,   'max': 10.0},
-    'HasObfuscation':           {'min': 0.0,   'max': 1.0},
-    'NoOfObfuscatedChar':       {'min': 0.0,   'max': 57.0},
-    'ObfuscationRatio':         {'min': 0.0,   'max': 0.348},
-    'LetterRatioInURL':         {'min': 0.0,   'max': 0.926},
-    'NoOfDegitsInURL':          {'min': 0.0,   'max': 662.0},
-    'DegitRatioInURL':          {'min': 0.0,   'max': 0.684},
-    'NoOfEqualsInURL':          {'min': 0.0,   'max': 51.0},
-    'NoOfQMarkInURL':           {'min': 0.0,   'max': 4.0},
-    'NoOfAmpersandInURL':       {'min': 0.0,   'max': 120.0},
-    'NoOfOtherSpecialCharsInURL':{'min': 0.0,   'max': 112.0},
-    'SpacialCharRatioInURL':    {'min': 0.0,   'max': 0.397},
-    'IsHTTPS':                  {'min': 0.0,   'max': 1.0},
-    'HasSocialNet':             {'min': 0.0,   'max': 1.0},
-    'HasCopyrightInfo':         {'min': 0.0,   'max': 1.0},
-    'HasDescription':           {'min': 0.0,   'max': 1.0},
-}
-
-# ------------------------------------------------------------------
-# Helper: normalise a value to [0,1] using supplied min‑max
-# ------------------------------------------------------------------
-def _normalise(value: float, feat_name: str) -> float:
-    rng = _FEATURE_RANGES.get(feat_name)
-    if not rng:
-        return value  # safety fallback – should never happen
-    mn, mx = rng['min'], rng['max']
-    if mx == mn:               # avoid division by zero
-        return 0.0
-    return (value - mn) / (mx - mn)
-
-
-# ------------------------------------------------------------------
-# Helper: longest‑common‑subsequence ratio (0‑1)
-# ------------------------------------------------------------------
-def _lcs_ratio(a: str, b: str) -> float:
+def _levenshtein_similarity(a: str, b: str) -> float:
     if not a or not b:
         return 0.0
     m, n = len(a), len(b)
-    dp = [[0] * (n + 1) for _ in range(m + 1)]
-    longest = 0
-    for i in range(m):
-        for j in range(n):
-            if a[i] == b[j]:
-                dp[i + 1][j + 1] = dp[i][j] + 1
-                longest = max(longest, dp[i + 1][j + 1])
-    return longest / max(m, n)
+    if m < n:
+        a, b = b, a
+        m, n = n, m
+    prev = list(range(n + 1))
+    for i in range(1, m + 1):
+        curr = [i] + [0] * n
+        for j in range(1, n + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            curr[j] = min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost)
+        prev = curr
+    return 1.0 - prev[n] / max(m, n)
+
+
+# ------------------------------------------------------------------
+# English letter frequencies and character-probability helpers
+# ------------------------------------------------------------------
+_ENGLISH_LETTER_FREQ = {
+    'a': 0.08167, 'b': 0.01492, 'c': 0.02782, 'd': 0.04253,
+    'e': 0.12702, 'f': 0.02228, 'g': 0.02015, 'h': 0.06094,
+    'i': 0.06966, 'j': 0.00153, 'k': 0.00772, 'l': 0.04025,
+    'm': 0.02406, 'n': 0.06749, 'o': 0.07507, 'p': 0.01929,
+    'q': 0.00095, 'r': 0.05987, 's': 0.06327, 't': 0.09056,
+    'u': 0.02758, 'v': 0.00978, 'w': 0.02360, 'x': 0.00150,
+    'y': 0.01974, 'z': 0.00074,
+}
+
+
+def _char_geo_mean_prob(url: str) -> float:
+    """
+    Character-level geometric mean probability (training range 0.001 – 0.09).
+    This approximates the URLCharProb feature from PhiUSIIL.
+    """
+    letters = [c.lower() for c in url if c.isalpha()]
+    if not letters:
+        return 0.001
+    log_p = sum(math.log(_ENGLISH_LETTER_FREQ.get(c, 0.0001)) for c in letters)
+    return round(max(0.001, min(0.09, math.exp(log_p / len(letters)))), 6)
+
+
+# ------------------------------------------------------------------
+# Common character bigrams for URL naturalness heuristics
+# ------------------------------------------------------------------
+_COMMON_BIGRAMS = frozenset({
+    'th','he','in','er','an','re','ed','on','es','st','en','at','to','nt',
+    'ha','nd','ou','ea','ng','or','ti','ar','te','et','it','is','hi','of',
+    'le','se','ve','co','me','de','al','ri','ro','li','ma','ta','el','ce',
+    'll','ne','ra','ur','io','si','om','pe','so','na','ec','ot','no','pa',
+    'la','ch','sh','ct','di','ca','cr','ac','ai','fe','fo','ho','hu','ke',
+    'ki','lo','lu','mo','mu','po','pr','sa','sc','sp','su','tr','tu','tw',
+    'un','up','us','ut','wa','we','wh','wi','wo','ya','ye',
+})
+
+_URL_SEPARATORS = frozenset('./-_~')
+
+
+def _char_continuation_rate(url: str) -> float:
+    """
+    Estimate character-sequence naturalness (0–1) as a proxy for
+    the PhiUSIIL CharContinuationRate feature.
+
+    We count bigram transitions that look "natural" in a URL context
+    (letter–letter, digit–digit, alpha–separator, etc.) and divide by
+    the total number of bigrams.
+    """
+    s = url.lower()
+    n = len(s)
+    if n < 2:
+        return 0.0
+    natural = 0
+    for i in range(n - 1):
+        a, b = s[i], s[i + 1]
+        if a.isalpha() and b.isalpha():
+            if a + b in _COMMON_BIGRAMS:
+                natural += 1.0
+            else:
+                natural += 0.4
+        elif a.isdigit() and b.isdigit():
+            natural += 1.0
+        elif a in _URL_SEPARATORS and b in _URL_SEPARATORS:
+            natural += 0.5
+        elif a.isalnum() and b in _URL_SEPARATORS:
+            natural += 0.7
+        elif a in _URL_SEPARATORS and b.isalnum():
+            natural += 0.7
+        else:
+            natural += 0.1
+    return round(natural / (n - 1), 6)
+
+
+# ------------------------------------------------------------------
+# TLD frequency groups for TLDLegitimateProb (raw, 0‑0.52)
+# ------------------------------------------------------------------
+_TLD_VERY_COMMON = frozenset({'com'})
+_TLD_COMMON = frozenset({
+    'org', 'net', 'edu', 'gov', 'mil', 'int',
+    'uk', 'de', 'fr', 'jp', 'ca', 'au', 'us', 'cn', 'br',
+})
+_TLD_MODERATE = frozenset({
+    'co', 'id', 'sg', 'my', 'ph', 'vn', 'th', 'nl', 'se', 'no',
+    'dk', 'fi', 'pl', 'ch', 'at', 'be', 'pt', 'ie', 'gr', 'cz',
+    'hu', 'ro', 'tr', 'il', 'za', 'ae', 'sa', 'mx', 'ar', 'cl',
+    'pe', 'ru', 'in', 'eu', 'info', 'io', 'me', 'tv', 'biz', 'pro',
+})
 
 
 # ------------------------------------------------------------------
@@ -168,21 +213,22 @@ def _lcs_ratio(a: str, b: str) -> float:
 # ------------------------------------------------------------------
 def extract_features(url: str) -> List[float]:
     """
-    Compute the 24 features expected by the model, in the exact order of FITUR_URL_ONLY.
-    All values are returned as float and **already normalised to [0,1]** using the
-    min‑max statistics you provided.
+    Compute the 24 raw (unnormalised) features expected by the model,
+    in the exact order of FITUR_URL_ONLY. The caller must apply the
+    MinMaxScaler before feeding the vector to predict/predict_proba.
     """
     # ---------- URL parsing ----------
     parsed = urlparse(url)
-    ext = tldextract.extract(url)          # subdomain, domain, suffix
+    ext = tldextract.extract(url)
     scheme = parsed.scheme.lower()
     netloc = parsed.netloc.lower()
     path = parsed.path
     query = parsed.query
     full = url.lower()
+    url_len = float(len(url))
 
     # ----- 1. URLLength -----
-    URLLength = float(len(url))
+    URLLength = url_len
 
     # ----- 2. DomainLength -----
     domain = f"{ext.domain}.{ext.suffix}" if ext.suffix else ext.domain
@@ -193,39 +239,38 @@ def extract_features(url: str) -> List[float]:
     ipv6_pat = re.compile(r'^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$')
     IsDomainIP = 1.0 if (ipv4_pat.match(ext.domain) or ipv6_pat.match(ext.domain)) else 0.0
 
-    # ----- 4. URLSimilarityIndex -----
+    # ----- 4. URLSimilarityIndex (0–100) -----
+    # Strip common prefixes that don't affect brand identity.
+    host_for_sim = netloc
+    if host_for_sim.startswith('www.'):
+        host_for_sim = host_for_sim[4:]
     legit_domains = [
         'google.com', 'youtube.com', 'wikipedia.org', 'github.com',
-        'stackoverflow.com', 'amazon.com', 'netflix.com', 'microsoft.com'
+        'stackoverflow.com', 'amazon.com', 'netflix.com', 'microsoft.com',
+        'facebook.com', 'twitter.com', 'instagram.com', 'linkedin.com',
+        'whatsapp.com', 'telegram.org', 'discord.com', 'zoom.us',
+        'apple.com', 'adobe.com', 'cloudflare.com', 'wordpress.com',
     ]
-    URLSimilarityIndex = float(
-        max(_lcs_ratio(url, d) for d in legit_domains)
+    URLSimilarityIndex = round(
+        max(_levenshtein_similarity(host_for_sim, d) for d in legit_domains) * 100, 6
     )
 
-    # ----- 5. CharContinuationRate -----
-    max_run = cur = 1
-    for i in range(1, len(url)):
-        if url[i] == url[i - 1]:
-            cur += 1
-            max_run = max(max_run, cur)
-        else:
-            cur = 1
-    CharContinuationRate = _safe_div(max_run, len(url))
+    # ----- 5. CharContinuationRate (0–1) -----
+    CharContinuationRate = _char_continuation_rate(url)
 
-    # ----- 6. TLDLegitimateProb -----
-    legit_tlds = {
-        'com', 'org', 'net', 'edu', 'gov', 'mil', 'int',
-        'co', 'uk', 'de', 'fr', 'jp', 'au', 'us', 'ca', 'id',
-        'sg', 'my', 'ph', 'vn', 'th', 'nl', 'se', 'no', 'dk',
-        'fi', 'pl', 'ch', 'at', 'be', 'pt', 'ie', 'gr', 'cz',
-        'hu', 'ro', 'tr', 'il', 'za', 'ae', 'sa', 'br', 'mx',
-        'ar', 'cl', 'pe', 'za'
-    }
-    TLDLegitimateProb = 1.0 if ext.suffix in legit_tlds else 0.0
+    # ----- 6. TLDLegitimateProb (0–0.52) -----
+    tld = ext.suffix.lower()
+    if tld in _TLD_VERY_COMMON:
+        TLDLegitimateProb = 0.52
+    elif tld in _TLD_COMMON:
+        TLDLegitimateProb = 0.35
+    elif tld in _TLD_MODERATE:
+        TLDLegitimateProb = 0.15
+    else:
+        TLDLegitimateProb = 0.0
 
-    # ----- 7. URLCharProb -----
-    alnum = sum(c.isalnum() for c in url)
-    URLCharProb = _safe_div(alnum, len(url))
+    # ----- 7. URLCharProb (0.001–0.09) -----
+    URLCharProb = _char_geo_mean_prob(full)
 
     # ----- 8. TLDLength -----
     TLDLength = float(len(ext.suffix))
@@ -241,19 +286,19 @@ def extract_features(url: str) -> List[float]:
     NoOfObfuscatedChar = float(len(re.findall(r'%[0-9A-Fa-f]{2}', url)))
 
     # ----- 12. ObfuscationRatio -----
-    ObfuscationRatio = _safe_div(NoOfObfuscatedChar, URLLength)
+    ObfuscationRatio = _safe_div(NoOfObfuscatedChar, url_len)
 
     # ----- 13. NoOfLettersInURL -----
     NoOfLettersInURL = float(sum(c.isalpha() for c in url))
 
     # ----- 14. LetterRatioInURL -----
-    LetterRatioInURL = _safe_div(NoOfLettersInURL, URLLength)
+    LetterRatioInURL = _safe_div(NoOfLettersInURL, url_len)
 
     # ----- 15. NoOfDegitsInURL -----
     NoOfDegitsInURL = float(sum(c.isdigit() for c in url))
 
     # ----- 16. DegitRatioInURL -----
-    DegitRatioInURL = _safe_div(NoOfDegitsInURL, URLLength)
+    DegitRatioInURL = _safe_div(NoOfDegitsInURL, url_len)
 
     # ----- 17. NoOfEqualsInURL -----
     NoOfEqualsInURL = float(url.count('='))
@@ -266,56 +311,48 @@ def extract_features(url: str) -> List[float]:
 
     # ----- 20. NoOfOtherSpecialCharsInURL -----
     special = sum(
-        1
-        for c in url
+        1 for c in url
         if not c.isalnum() and c not in '=?&./:-'
     )
     NoOfOtherSpecialCharsInURL = float(special)
 
     # ----- 21. SpacialCharRatioInURL -----
-    SpacialCharRatioInURL = _safe_div(NoOfOtherSpecialCharsInURL, URLLength)
+    SpacialCharRatioInURL = _safe_div(NoOfOtherSpecialCharsInURL, url_len)
 
     # ----- 22. IsHTTPS -----
     IsHTTPS = 1.0 if scheme == 'https' else 0.0
 
     # ----- 23. HasSocialNet -----
-    # Try to fetch the page and look inside <footer> for social links.
     HasSocialNet = 0.0
     # ----- 24. HasCopyrightInfo -----
     HasCopyrightInfo = 0.0
     # ----- 25. HasDescription -----
     HasDescription = 0.0
 
-    # Try to fetch the page (short timeout) – if it fails we fall back to URL‑only heuristics.
     try:
         resp = requests.get(
-            url,
-            timeout=6,
+            url, timeout=6,
             headers={'User-Agent': 'EpiccSafeScanner/1.0'},
             allow_redirects=True,
         )
         if resp.status_code == 200 and resp.text:
             soup = BeautifulSoup(resp.text, 'lxml')
 
-            # ----- HasCopyrightInfo -----
             page_text = soup.get_text(separator=' ', strip=True).lower()
-            if '©' in page_text or 'copyright' in page_text:
+            if '\u00a9' in page_text or 'copyright' in page_text:
                 HasCopyrightInfo = 1.0
 
-            # ----- HasDescription -----
             meta_desc = soup.find('meta', attrs={'name': re.compile(r'description', re.I)})
             if meta_desc and meta_desc.get('content'):
                 HasDescription = 1.0
             else:
-                # Fallback to query‑parameter check if meta not found.
                 qs = parse_qs(query)
                 if any(k in qs for k in {'desc', 'description', 'descricao', 'keterangan', 'info'}):
                     HasDescription = 1.0
 
-            # ----- HasSocialNet (search in <footer> first, then whole doc) -----
             socials = {
                 'facebook', 'twitter', 'instagram', 'tiktok', 'linkedin',
-                'youtube', 'reddit', 'pinterest', 'snapchat', 'whatsapp'
+                'youtube', 'reddit', 'pinterest', 'snapchat', 'whatsapp',
             }
             footer = soup.find('footer')
             search_root = footer if footer else soup
@@ -325,40 +362,28 @@ def extract_features(url: str) -> List[float]:
                     HasSocialNet = 1.0
                     break
     except Exception:
-        # If the request fails, fall back to the lighter checks we already had.
-        # HasCopyrightInfo – just look for the word copyright in the URL string.
-        if 'copyright' in full or '©' in url:
+        if 'copyright' in full or '\u00a9' in url:
             HasCopyrightInfo = 1.0
-        # HasDescription – query‑parameter check.
         qs = parse_qs(query)
         if any(k in qs for k in {'desc', 'description', 'descricao', 'keterangan', 'info'}):
             HasDescription = 1.0
-        # HasSocialNet – crude URL‑based hint.
         socials = {
             'facebook', 'twitter', 'instagram', 'tiktok', 'linkedin',
-            'youtube', 'reddit', 'pinterest', 'snapchat', 'whatsapp'
+            'youtube', 'reddit', 'pinterest', 'snapchat', 'whatsapp',
         }
         if any(s in netloc for s in socials):
             HasSocialNet = 1.0
 
-    # ----- Build raw feature list in the exact order -----
-    raw_features = [
+    # ----- Build raw (unnormalised) feature vector -----
+    return [
         URLLength, DomainLength, IsDomainIP, URLSimilarityIndex,
         CharContinuationRate, TLDLegitimateProb, URLCharProb, TLDLength,
         NoOfSubDomain, HasObfuscation, NoOfObfuscatedChar, ObfuscationRatio,
         LetterRatioInURL, NoOfDegitsInURL, DegitRatioInURL,
         NoOfEqualsInURL, NoOfQMarkInURL, NoOfAmpersandInURL,
         NoOfOtherSpecialCharsInURL, SpacialCharRatioInURL,
-        IsHTTPS, HasSocialNet, HasCopyrightInfo, HasDescription
+        IsHTTPS, HasSocialNet, HasCopyrightInfo, HasDescription,
     ]
-
-    # ----- Normalise each feature using the supplied min‑max -----
-    normalised = [
-        _normalise(val, name)
-        for val, name in zip(raw_features, FITUR_URL_ONLY)
-    ]
-
-    return normalised
 
 
 # ------------------------------------------------------------------
@@ -468,25 +493,33 @@ def scan_url_unified(payload: ScanRequest):
             feature_map={name: 0.0 for name in FITUR_URL_ONLY}
         )
 
-    # 3️⃣ Feature extraction
-    features = extract_features(url)
-    if len(features) != len(FITUR_URL_ONLY):
+    # 3️⃣ Feature extraction (raw, unnormalised)
+    raw_features = extract_features(url)
+    if len(raw_features) != len(FITUR_URL_ONLY):
         raise HTTPException(
             status_code=500,
-            detail=f"[SCAN][FEATURE] Ekstraksi fitur untuk URL '{url}' menghasilkan {len(features)} fitur (diharapkan {len(FITUR_URL_ONLY)})"
+            detail=f"[SCAN][FEATURE] Ekstraksi fitur untuk URL '{url}' menghasilkan {len(raw_features)} fitur (diharapkan {len(FITUR_URL_ONLY)})"
         )
 
-    # 4️⃣ Model prediction
+    # 4️⃣ Scale raw features with the MinMaxScaler
+    if scaler_epiccsafe is None:
+        raise HTTPException(status_code=500, detail="[SCAN][SCALER] Scaler tidak ditemukan. Pastikan scaler_epiccsafe.pkl ada.")
+
+    try:
+        features_2d = np.array([raw_features])
+        features_scaled = scaler_epiccsafe.transform(features_2d)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"[SCAN][SCALER] Gagal scaling fitur: {str(e)}")
+
+    # 5️⃣ Model prediction
     if model is None:
         raise HTTPException(status_code=500, detail=f"[SCAN][MODEL] Model ML tidak ditemukan atau gagal dimuat di path '{MODEL_PATH}'")
 
     try:
-        # model.predict_proba → [prob_safe, prob_phishing]
-        probs = model.predict_proba([features])[0]
-        prediction = int(model.predict([features])[0])
+        probs = model.predict_proba(features_scaled)[0]
+        prediction = int(model.predict(features_scaled)[0])
     except AttributeError:
-        # Fallback if the model lacks predict_proba
-        pred = model.predict([features])[0]
+        pred = model.predict(features_scaled)[0]
         prediction = int(pred)
         probs = [0.0, 0.0]
         if prediction == 1:
@@ -498,11 +531,11 @@ def scan_url_unified(payload: ScanRequest):
     phishing_prob = probs[1] if len(probs) > 1 else float(prediction)
     score = int(round(phishing_prob * 100))
 
-    # Human‑readable conclusion
     conclusion = "PHISHING (Bahaya)" if prediction == 1 else "SAFE (Bukan Phishing)"
 
-    # Build feature map for debugging
-    feature_map = {name: float(val) for name, val in zip(FITUR_URL_ONLY, features)}
+    # Build debug maps
+    features_scaled_list = features_scaled[0].tolist()
+    feature_map = {name: float(val) for name, val in zip(FITUR_URL_ONLY, features_scaled_list)}
 
     return ScanResponse(
         url=url,
@@ -511,6 +544,6 @@ def scan_url_unified(payload: ScanRequest):
         prediction=prediction,
         predict_proba=probs,
         conclusion=conclusion,
-        features=features,
+        features=features_scaled_list,
         feature_map=feature_map
     )
