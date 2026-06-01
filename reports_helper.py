@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 import supabase_client as db
 
 
@@ -9,21 +10,57 @@ def generate_ticket_id() -> str:
     return f"TICKET-{uuid.uuid4().hex[:8].upper()}"
 
 
+def _get_netloc(url: str) -> str:
+    """Extract netloc (domain) from a URL string."""
+    parsed = urlparse(url)
+    return parsed.netloc.lower() if parsed.netloc else url.lower()
+
+
+def _is_match(incoming_url: str, stored_url: str) -> bool:
+    """Check if stored_url matches the root of incoming_url."""
+    a = incoming_url.lower().rstrip("/")
+    b = stored_url.lower().rstrip("/")
+    # Exact match
+    if a == b:
+        return True
+    # URL starts with stored entry (e.g. https://x.com/page matches https://x.com)
+    if a.startswith(b + "/") or a.startswith(b + "?"):
+        return True
+    # Netloc (domain) match — stored entry is a bare domain
+    incoming_netloc = _get_netloc(incoming_url)
+    stored_netloc = _get_netloc(stored_url)
+    if not stored_netloc:
+        return False
+    return incoming_netloc == stored_netloc or incoming_netloc.endswith("." + stored_netloc)
+
+
 def is_blacklisted(url: str) -> bool:
-    """Check if URL is in blacklist"""
+    """Check if URL or its root domain is in blacklist"""
     try:
-        result = db.supabase_admin.table("blacklist_urls").select("url").eq("url", url).execute()
-        return len(result.data) > 0
+        result = db.supabase_admin.table("blacklist_urls").select("url").execute()
+        if not result.data:
+            return False
+        for row in result.data:
+            stored = row.get("url")
+            if stored and _is_match(url, stored):
+                return True
+        return False
     except Exception as e:
         print(f"Error checking blacklist: {e}")
         return False
 
 
 def is_whitelisted(url: str) -> bool:
-    """Check if URL is in whitelist"""
+    """Check if URL or its root domain is in whitelist"""
     try:
-        result = db.supabase_admin.table("whitelist_urls").select("url").eq("url", url).execute()
-        return len(result.data) > 0
+        result = db.supabase_admin.table("whitelist_urls").select("url").execute()
+        if not result.data:
+            return False
+        for row in result.data:
+            stored = row.get("url")
+            if stored and _is_match(url, stored):
+                return True
+        return False
     except Exception as e:
         print(f"Error checking whitelist: {e}")
         return False

@@ -12,6 +12,9 @@ import re
 import math
 import tldextract
 import requests
+import difflib
+import pandas as pd
+from collections import defaultdict
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs
 from reports_helper import is_blacklisted, is_whitelisted
@@ -90,6 +93,53 @@ else:
 
 
 # ------------------------------------------------------------------
+# N‑Gram model trained from Tranco top domains
+# ------------------------------------------------------------------
+class ProbabilitasKarakterNGram:
+    def __init__(self, csv_path: str, max_domains: int = 10000):
+        try:
+            df = pd.read_csv(csv_path, header=None, nrows=max_domains)
+            self.domain_aman: List[str] = df[1].dropna().tolist()
+        except Exception:
+            self.domain_aman = ["google.com", "youtube.com", "cimbniaga.co.id", "bca.co.id", "tokopedia.com"]
+        self.matriks_transisi = self._bangun_matriks(self.domain_aman)
+
+    def _bangun_matriks(self, domains):
+        transisi = defaultdict(int)
+        kemunculan = defaultdict(int)
+        for domain in domains:
+            huruf_saja = "".join(c for c in str(domain) if c.isalpha()).lower()
+            if len(huruf_saja) < 2:
+                continue
+            for i in range(len(huruf_saja) - 1):
+                h1, h2 = huruf_saja[i], huruf_saja[i + 1]
+                transisi[(h1, h2)] += 1
+                kemunculan[h1] += 1
+        prob = {}
+        for (h1, h2), jml in transisi.items():
+            prob[(h1, h2)] = jml / kemunculan[h1]
+        return prob
+
+    def hitung_skor_url(self, url: str) -> float:
+        huruf_saja = "".join(c for c in url if c.isalpha()).lower()
+        if len(huruf_saja) < 2:
+            return 0.0
+        total = 0.0
+        for i in range(len(huruf_saja) - 1):
+            prob = self.matriks_transisi.get((huruf_saja[i], huruf_saja[i + 1]), 0.001)
+            total += prob
+        rata2 = total / (len(huruf_saja) - 1)
+        return min(0.09, rata2 * 0.1)
+
+
+# ------------------------------------------------------------------
+# Load N‑gram model (once at startup)
+# ------------------------------------------------------------------
+_TRANCO_PATH = os.path.join(_BASE_DIR, "tranco_XW7QN.csv")
+ngram_model = ProbabilitasKarakterNGram(_TRANCO_PATH)
+
+
+# ------------------------------------------------------------------
 # Helper: safe division (avoid ZeroDivisionError)
 # ------------------------------------------------------------------
 def _safe_div(a: float, b: float) -> float:
@@ -117,95 +167,12 @@ def _levenshtein_similarity(a: str, b: str) -> float:
 
 
 # ------------------------------------------------------------------
-# English letter frequencies and character-probability helpers
+# TLD dictionary for TLDLegitimateProb
 # ------------------------------------------------------------------
-_ENGLISH_LETTER_FREQ = {
-    'a': 0.08167, 'b': 0.01492, 'c': 0.02782, 'd': 0.04253,
-    'e': 0.12702, 'f': 0.02228, 'g': 0.02015, 'h': 0.06094,
-    'i': 0.06966, 'j': 0.00153, 'k': 0.00772, 'l': 0.04025,
-    'm': 0.02406, 'n': 0.06749, 'o': 0.07507, 'p': 0.01929,
-    'q': 0.00095, 'r': 0.05987, 's': 0.06327, 't': 0.09056,
-    'u': 0.02758, 'v': 0.00978, 'w': 0.02360, 'x': 0.00150,
-    'y': 0.01974, 'z': 0.00074,
+_TLD_KAMUS = {
+    ".com": 0.5229, ".co.id": 0.4500, ".id": 0.3000,
+    ".org": 0.2100, ".net": 0.1500,
 }
-
-
-def _char_geo_mean_prob(url: str) -> float:
-    """
-    Character-level geometric mean probability (training range 0.001 – 0.09).
-    This approximates the URLCharProb feature from PhiUSIIL.
-    """
-    letters = [c.lower() for c in url if c.isalpha()]
-    if not letters:
-        return 0.001
-    log_p = sum(math.log(_ENGLISH_LETTER_FREQ.get(c, 0.0001)) for c in letters)
-    return round(max(0.001, min(0.09, math.exp(log_p / len(letters)))), 6)
-
-
-# ------------------------------------------------------------------
-# Common character bigrams for URL naturalness heuristics
-# ------------------------------------------------------------------
-_COMMON_BIGRAMS = frozenset({
-    'th','he','in','er','an','re','ed','on','es','st','en','at','to','nt',
-    'ha','nd','ou','ea','ng','or','ti','ar','te','et','it','is','hi','of',
-    'le','se','ve','co','me','de','al','ri','ro','li','ma','ta','el','ce',
-    'll','ne','ra','ur','io','si','om','pe','so','na','ec','ot','no','pa',
-    'la','ch','sh','ct','di','ca','cr','ac','ai','fe','fo','ho','hu','ke',
-    'ki','lo','lu','mo','mu','po','pr','sa','sc','sp','su','tr','tu','tw',
-    'un','up','us','ut','wa','we','wh','wi','wo','ya','ye',
-})
-
-_URL_SEPARATORS = frozenset('./-_~')
-
-
-def _char_continuation_rate(url: str) -> float:
-    """
-    Estimate character-sequence naturalness (0–1) as a proxy for
-    the PhiUSIIL CharContinuationRate feature.
-
-    We count bigram transitions that look "natural" in a URL context
-    (letter–letter, digit–digit, alpha–separator, etc.) and divide by
-    the total number of bigrams.
-    """
-    s = url.lower()
-    n = len(s)
-    if n < 2:
-        return 0.0
-    natural = 0
-    for i in range(n - 1):
-        a, b = s[i], s[i + 1]
-        if a.isalpha() and b.isalpha():
-            if a + b in _COMMON_BIGRAMS:
-                natural += 1.0
-            else:
-                natural += 0.4
-        elif a.isdigit() and b.isdigit():
-            natural += 1.0
-        elif a in _URL_SEPARATORS and b in _URL_SEPARATORS:
-            natural += 0.5
-        elif a.isalnum() and b in _URL_SEPARATORS:
-            natural += 0.7
-        elif a in _URL_SEPARATORS and b.isalnum():
-            natural += 0.7
-        else:
-            natural += 0.1
-    return round(natural / (n - 1), 6)
-
-
-# ------------------------------------------------------------------
-# TLD frequency groups for TLDLegitimateProb (raw, 0‑0.52)
-# ------------------------------------------------------------------
-_TLD_VERY_COMMON = frozenset({'com'})
-_TLD_COMMON = frozenset({
-    'org', 'net', 'edu', 'gov', 'mil', 'int',
-    'uk', 'de', 'fr', 'jp', 'ca', 'au', 'us', 'cn', 'br',
-})
-_TLD_MODERATE = frozenset({
-    'co', 'id', 'sg', 'my', 'ph', 'vn', 'th', 'nl', 'se', 'no',
-    'dk', 'fi', 'pl', 'ch', 'at', 'be', 'pt', 'ie', 'gr', 'cz',
-    'hu', 'ro', 'tr', 'il', 'za', 'ae', 'sa', 'mx', 'ar', 'cl',
-    'pe', 'ru', 'in', 'eu', 'info', 'io', 'me', 'tv', 'biz', 'pro',
-})
 
 
 # ------------------------------------------------------------------
@@ -240,37 +207,30 @@ def extract_features(url: str) -> List[float]:
     IsDomainIP = 1.0 if (ipv4_pat.match(ext.domain) or ipv6_pat.match(ext.domain)) else 0.0
 
     # ----- 4. URLSimilarityIndex (0–100) -----
-    # Strip common prefixes that don't affect brand identity.
     host_for_sim = netloc
     if host_for_sim.startswith('www.'):
         host_for_sim = host_for_sim[4:]
-    legit_domains = [
-        'google.com', 'youtube.com', 'wikipedia.org', 'github.com',
-        'stackoverflow.com', 'amazon.com', 'netflix.com', 'microsoft.com',
-        'facebook.com', 'twitter.com', 'instagram.com', 'linkedin.com',
-        'whatsapp.com', 'telegram.org', 'discord.com', 'zoom.us',
-        'apple.com', 'adobe.com', 'cloudflare.com', 'wordpress.com',
-    ]
+    whitelist_sample = ngram_model.domain_aman[:1000]
     URLSimilarityIndex = round(
-        max(_levenshtein_similarity(host_for_sim, d) for d in legit_domains) * 100, 6
+        max(_levenshtein_similarity(host_for_sim, d) for d in whitelist_sample) * 100, 6
     )
 
     # ----- 5. CharContinuationRate (0–1) -----
-    CharContinuationRate = _char_continuation_rate(url)
+    huruf_sequences = re.findall(r'[a-zA-Z]+', url)
+    if url_len > 0 and huruf_sequences:
+        CharContinuationRate = max(len(h) for h in huruf_sequences) / url_len
+    else:
+        CharContinuationRate = 0.0
 
     # ----- 6. TLDLegitimateProb (0–0.52) -----
-    tld = ext.suffix.lower()
-    if tld in _TLD_VERY_COMMON:
-        TLDLegitimateProb = 0.52
-    elif tld in _TLD_COMMON:
-        TLDLegitimateProb = 0.35
-    elif tld in _TLD_MODERATE:
-        TLDLegitimateProb = 0.15
-    else:
-        TLDLegitimateProb = 0.0
+    tld_key = "." + ext.suffix.lower()
+    TLDLegitimateProb = _TLD_KAMUS.get(tld_key, 0.0)
 
     # ----- 7. URLCharProb (0.001–0.09) -----
-    URLCharProb = _char_geo_mean_prob(full)
+    domain_for_ngram = domain
+    if domain_for_ngram.startswith('www.'):
+        domain_for_ngram = domain_for_ngram[4:]
+    URLCharProb = ngram_model.hitung_skor_url(domain_for_ngram)
 
     # ----- 8. TLDLength -----
     TLDLength = float(len(ext.suffix))

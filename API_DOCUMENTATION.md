@@ -187,7 +187,51 @@ Add a URL to the whitelist (Admin only).
 
 ---
 
-### 8. Get Report Logs
+### 8. Broadcast Phishing Warning
+Send a broadcast warning email to all unique reporter emails about a phishing URL.
+
+**Endpoint:** `POST /admin/broadcast`
+
+**Request Body:**
+```json
+{
+  "url": "http://phishing-site.com",
+  "admin_id": "admin-uuid-here"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "message": "Broadcast selesai. 10 email terkirim, 0 gagal",
+  "total_unique_emails": 10,
+  "sent": 10,
+  "failed": 0
+}
+```
+
+---
+
+### 9. Get Admin by ID
+Get admin details (name, email) by admin ID.
+
+**Endpoint:** `GET /admin/{admin_id}`
+
+**Parameters:**
+- `admin_id` (path): Admin ID to look up
+
+**Response (200 OK):**
+```json
+{
+  "id": "admin-uuid-here",
+  "name": "Admin Name",
+  "email": "admin@example.com"
+}
+```
+
+---
+
+### 10. Get Report Logs
 Get activity logs for a specific report.
 
 **Endpoint:** `GET /admin/reports/{report_id}/logs`
@@ -214,7 +258,7 @@ Get activity logs for a specific report.
 
 ## Scan Functions
 
-### 9. Scan URL
+### 11. Scan URL
 Quick scan to check if URL is blacklisted or whitelisted.
 
 **Endpoint:** `GET /scan/url?url=http://example.com`
@@ -232,7 +276,7 @@ Quick scan to check if URL is blacklisted or whitelisted.
 
 ---
 
-### 10. Scan URL (Extension)
+### 12. Scan URL (Extension)
 Extended scan for browser extension - includes risk score.
 
 **Endpoint:** `GET /scan/url/extension?url=http://example.com`
@@ -251,7 +295,7 @@ Extended scan for browser extension - includes risk score.
 
 ---
 
-### 11. Check URL Status
+### 13. Check URL Status
 Get status classification for a URL.
 
 **Endpoint:** `GET /scan/url/status?url=http://example.com`
@@ -275,7 +319,7 @@ Get status classification for a URL.
 
 ---
 
-### 12. Call Scan API
+### 14. Call Scan API
 Call external scan API (Dummy implementation).
 
 **Endpoint:** `GET /scan/api`

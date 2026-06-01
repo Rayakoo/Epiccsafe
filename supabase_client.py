@@ -1,4 +1,5 @@
 import os
+import httpx
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -13,7 +14,29 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 # Create Supabase client for regular operations (uses anon key)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
-# Create Supabase admin client for operations requiring service role
+# Direct PostgREST client using service_role key (bypasses library auth issues)
+_POSTGREST_URL = f"{SUPABASE_URL}/rest/v1"
+_SERVICE_HEADERS = {
+    "apikey": SUPABASE_SERVICE_ROLE_KEY or "",
+    "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY or ''}",
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+}
+
+def _postgrest(method: str, table: str, data: dict = None) -> dict:
+    """Direct PostgREST call with service_role key."""
+    url = f"{_POSTGREST_URL}/{table}"
+    headers = {**_SERVICE_HEADERS}
+    if method.upper() in ("POST", "PATCH", "PUT"):
+        headers["Prefer"] = "return=representation"
+    resp = httpx.request(method, url, headers=headers, json=data, timeout=15)
+    if resp.is_error:
+        raise Exception(resp.text)
+    if not resp.text.strip():
+        return {}
+    return resp.json()
+
+# Create Supabase admin client for operations requiring service role (may fail for some)
 supabase_admin: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 
@@ -78,8 +101,8 @@ def is_admin(user_id: str):
         bool: True if user is admin, False otherwise
     """
     try:
-        response = supabase_admin.table("admins").select("id").eq("id", user_id).execute()
-        return len(response.data) > 0
+        result = _postgrest("GET", f"admins?id=eq.{user_id}")
+        return len(result) > 0
     except Exception as e:
         print(f"Error checking admin status: {e}")
         return False

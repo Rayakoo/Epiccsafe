@@ -89,7 +89,7 @@ async def signup(request: SignUpRequest):
             "password_hash": "",
         }
         admin_data = {k: v for k, v in admin_data.items() if v is not None}
-        auth.supabase_admin.table("admins").insert(admin_data).execute()
+        auth._postgrest("POST", "admins", admin_data)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

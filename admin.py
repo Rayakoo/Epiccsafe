@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, date
 import supabase_client as db
 from reports_helper import log_report_activity, is_blacklisted, is_whitelisted
-from email_service import send_status_update
+from email_service import send_status_update, send_broadcast_warning
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -20,6 +20,10 @@ class UpdateStatusRequest(BaseModel):
 class AddUrlRequest(BaseModel):
     url: str = Field(..., description="URL to add")
     admin_id: str = Field(..., description="Admin ID")
+
+class BroadcastRequest(BaseModel):
+    url: str = Field(..., description="Phishing URL to warn about")
+    admin_id: str = Field(..., description="Admin ID making the broadcast")
 
 class ReportResponse(BaseModel):
     id: str
@@ -243,6 +247,70 @@ async def add_whitelist(request: AddUrlRequest):
         )
 
 
+@router.post("/broadcast")
+async def broadcast_warning(request: BroadcastRequest):
+    """
+    Broadcast a phishing warning to all unique reporter emails
+
+    - **url**: The phishing URL to warn about
+    - **admin_id**: Admin making the broadcast
+    """
+    try:
+        result = db.supabase_admin.table("reports") \
+            .select("email, reporter_name") \
+            .execute()
+
+        if not result.data:
+            raise HTTPException(
+                status_code=404,
+                detail="[ADMIN][BROADCAST] Tidak ada laporan ditemukan"
+            )
+
+        unique: dict[str, str] = {}
+        for row in result.data:
+            email = row.get("email")
+            name = row.get("reporter_name") or ""
+            if email and email not in unique:
+                unique[email] = name
+
+        sent = 0
+        failed = 0
+        for email, name in unique.items():
+            try:
+                send_broadcast_warning(
+                    to_email=email,
+                    url=request.url,
+                    reporter_name=name,
+                )
+                sent += 1
+            except Exception as e:
+                print(f"[ADMIN][BROADCAST] Gagal kirim ke {email}: {e}")
+                failed += 1
+
+        log_report_activity(
+            report_id=f"broadcast-{uuid.uuid4()}",
+            old_status="",
+            new_status="BROADCAST",
+            changed_by=request.admin_id,
+            note=f"Broadcast peringatan phishing untuk URL: {request.url}"
+        )
+
+        return {
+            "message": f"Broadcast selesai. {sent} email terkirim, {failed} gagal",
+            "total_unique_emails": len(unique),
+            "sent": sent,
+            "failed": failed,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"[ADMIN][BROADCAST] Gagal broadcast peringatan: {str(e)}"
+        )
+
+
 @router.get("/reports/{report_id}/logs")
 async def get_report_logs(report_id: str):
     """
@@ -259,4 +327,31 @@ async def get_report_logs(report_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"[ADMIN][LOGS] Gagal mengambil log untuk laporan '{report_id}': {str(e)}"
+        )
+
+
+@router.get("/{admin_id}")
+async def get_admin(admin_id: str):
+    """
+    Get admin details by ID
+
+    - **admin_id**: Admin ID to look up
+    """
+    try:
+        result = db.supabase_admin.table("admins").select("id, name, email").eq("id", admin_id).execute()
+
+        if not result.data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"[ADMIN] Admin dengan ID '{admin_id}' tidak ditemukan"
+            )
+
+        return result.data[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"[ADMIN] Gagal mengambil data admin '{admin_id}': {str(e)}"
         )

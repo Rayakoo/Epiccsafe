@@ -116,6 +116,8 @@ async def submit_report(request: SubmitReportRequest):
                 ticket_id=ticket_id,
                 url=request.url,
                 status="OPEN",
+                reporter_name=request.reporter_name or "",
+                description=request.description or "",
             )
         except Exception as e:
             print(f"[REPORTS][EMAIL] Gagal kirim email konfirmasi: {e}")
