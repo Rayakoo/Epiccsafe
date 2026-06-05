@@ -1,45 +1,40 @@
 import os
-import httpx
+import smtplib
 import logging
 from datetime import datetime
 from typing import Optional
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
-EMAIL_FROM = os.environ.get("EMAIL_FROM", "EpiccSafe <noreply@epiccsafe.com>")
-
-RESEND_API_URL = "https://api.resend.com/emails"
+SMTP_EMAIL = os.environ.get("SMTP_EMAIL")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
+SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 
 logger = logging.getLogger(__name__)
 
 
 def _send_email(to: str, subject: str, html: str) -> bool:
-    if not RESEND_API_KEY:
-        logger.warning("RESEND_API_KEY tidak dikonfigurasi, email tidak dikirim")
+    if not SMTP_EMAIL or not SMTP_PASSWORD:
+        logger.warning("SMTP_EMAIL atau SMTP_PASSWORD tidak dikonfigurasi, email tidak dikirim")
         return False
 
     try:
-        resp = httpx.post(
-            RESEND_API_URL,
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "from": EMAIL_FROM,
-                "to": [to],
-                "subject": subject,
-                "html": html,
-            },
-            timeout=15,
-        )
-        if resp.is_success:
-            logger.info(f"Email berhasil dikirim ke {to}: {subject}")
-            return True
-        else:
-            logger.error(f"Gagal kirim email ke {to}: {resp.status_code} {resp.text}")
-            return False
+        msg = MIMEMultipart("alternative")
+        msg["From"] = SMTP_EMAIL
+        msg["To"] = to
+        msg["Subject"] = subject
+        msg.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_EMAIL, SMTP_PASSWORD)
+            server.sendmail(SMTP_EMAIL, [to], msg.as_string())
+
+        logger.info(f"Email berhasil dikirim ke {to}: {subject}")
+        return True
     except Exception as e:
-        logger.error(f"Exception saat kirim email ke {to}: {e}")
+        logger.error(f"Gagal kirim email ke {to}: {e}")
         return False
 
 

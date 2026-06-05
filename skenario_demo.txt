@@ -1,0 +1,11 @@
+SKENARIO DEMO EPICCSAFE
+========================
+
+| No | Langkah Demo | Input/Data yang Digunakan | Output yang Ditampilkan | Catatan |
+|---|-------------|--------------------------|------------------------|---------|
+| 1 | Scan URL aman - Kirim request GET /scan/url/status?url=... dengan URL legitimate | https://google.com | {"url": "https://google.com", "conclusion": "WHITELISTED", "score": 0} | URL whitelist langsung return safe tanpa ML |
+| 2 | Scan URL mencurigakan - Kirim request POST /scan dengan URL phishing | {"url": "http://secure-login.xyz/verify?token=abc123"} | {"url": "...", "score": 87.5, "prediction": 1, "conclusion": "DANGEROUS", "reason": "Blacklist match / ML prediction"} | Cek fitur seperti panjang URL, obfuscation, domain mencurigakan |
+| 3 | Submit laporan pengguna - Kirim POST /reports/submit dengan data pelapor dan URL | {"email": "user@example.com", "url": "http://phishing-site.xyz", "description": "Tautan mencurigakan di SMS", "source": "SMS", "name": "Budi"} | {"ticket_id": "TICKET-A1B2C3D4", "status": "PENDING", "risk_score": 92.3} | Email konfirmasi terkirim ke user; laporan masuk db |
+| 4 | Cek status laporan - Kirim GET /reports/status/{ticket_id} menggunakan ticket dari skenario 3 | TICKET-A1B2C3D4 | {"ticket_id": "TICKET-A1B2C3D4", "status": "PENDING", "url": "...", "risk_score": 92.3} | Status awal selalu PENDING sebelum ditinjau admin |
+| 5 | Admin login & lihat laporan - POST /auth/signin lalu GET /admin/reports | Email & password admin: admin@epiccsafe.com / password123 | Token JWT -> daftar laporan: [{"id": "TICKET-A1B2C3D4", "email": "user@...", "status": "PENDING", ...}] | Hanya user di tabel admins bisa login |
+| 6 | Admin resolve laporan + blacklist - PUT /admin/reports/status update laporan jadi RESOLVED & POST /admin/blacklist | {"ticket_id": "TICKET-A1B2C3D4", "status": "RESOLVED", "final_status": "BLACKLISTED", "note": "Terbukti phishing"} | Laporan sukses diresolve, URL masuk blacklist, email notifikasi terkirim ke pelapor | URL akan langsung mendapat score 100 di scan selanjutnya |
