@@ -1,11 +1,14 @@
-from fastapi import APIRouter, HTTPException, Depends, Query
+import logging
+from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import Optional, List
 import uuid
 from datetime import datetime, date
 import supabase_client as db
 from reports_helper import log_report_activity, is_blacklisted, is_whitelisted
-from email_service import send_status_update, send_broadcast_warning
+from email_service import send_status_update, send_broadcast_warning, broadcast_bulk
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -248,7 +251,7 @@ async def add_whitelist(request: AddUrlRequest):
 
 
 @router.post("/broadcast")
-async def broadcast_warning(request: BroadcastRequest):
+async def broadcast_warning(request: BroadcastRequest, background_tasks: BackgroundTasks):
     """
     Broadcast a phishing warning to all unique reporter emails
 
@@ -273,33 +276,13 @@ async def broadcast_warning(request: BroadcastRequest):
             if email and email not in unique:
                 unique[email] = name
 
-        sent = 0
-        failed = 0
-        for email, name in unique.items():
-            try:
-                send_broadcast_warning(
-                    to_email=email,
-                    url=request.url,
-                    reporter_name=name,
-                )
-                sent += 1
-            except Exception as e:
-                print(f"[ADMIN][BROADCAST] Gagal kirim ke {email}: {e}")
-                failed += 1
+        recipients = [(email, name) for email, name in unique.items()]
 
-        log_report_activity(
-            report_id=f"broadcast-{uuid.uuid4()}",
-            old_status="",
-            new_status="BROADCAST",
-            changed_by=request.admin_id,
-            note=f"Broadcast peringatan phishing untuk URL: {request.url}"
-        )
+        background_tasks.add_task(_run_broadcast, recipients, request.url, request.admin_id)
 
         return {
-            "message": f"Broadcast selesai. {sent} email terkirim, {failed} gagal",
-            "total_unique_emails": len(unique),
-            "sent": sent,
-            "failed": failed,
+            "message": f"Broadcast dimulai. {len(recipients)} email sedang diproses di latar belakang.",
+            "total_unique_emails": len(recipients),
         }
 
     except HTTPException:
@@ -309,6 +292,19 @@ async def broadcast_warning(request: BroadcastRequest):
             status_code=500,
             detail=f"[ADMIN][BROADCAST] Gagal broadcast peringatan: {str(e)}"
         )
+
+
+def _run_broadcast(recipients: list[tuple[str, str]], url: str, admin_id: str):
+    sent, failed = broadcast_bulk(recipients, url)
+    log_report_activity(
+        report_id=f"broadcast-{uuid.uuid4()}",
+        old_status="",
+        new_status="BROADCAST",
+        changed_by=admin_id,
+        note=f"Broadcast peringatan phishing untuk URL: {url} — {sent} terkirim, {failed} gagal"
+    )
+    logger.info(f"[BROADCAST] Selesai: {sent} terkirim, {failed} gagal")
+    print(f"[BROADCAST] Selesai: {sent} terkirim, {failed} gagal")
 
 
 @router.get("/reports/{report_id}/logs")
